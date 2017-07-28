@@ -16,12 +16,12 @@
 #include <QMessageBox>
 #include <QCloseEvent>
 #include <QLocalSocket>
-#include <botan/version.h>
 
 MainWindow::MainWindow(ConfigHelper *confHelper, QWidget *parent) :
     QMainWindow(parent),
     ui(new Ui::MainWindow),
-    configHelper(confHelper)
+    configHelper(confHelper),
+    instanceRunning(false)
 {
     Q_ASSERT(configHelper);
 
@@ -446,9 +446,8 @@ void MainWindow::checkCurrentIndex(const QModelIndex &_index)
 void MainWindow::onAbout()
 {
     QString text = QString("<h1>Shadowsocks-Qt5</h1><p><b>Version %1</b><br />"
-            "Using libQtShadowsocks %2<br />"
-            "Using Botan %3.%4.%5</p>"
-            "<p>Copyright © 2014-2016 Symeon Huang "
+            "Using libQtShadowsocks %2</p>"
+            "<p>Copyright © 2014-2017 Symeon Huang "
             "(<a href='https://twitter.com/librehat'>"
             "@librehat</a>)</p>"
             "<p>License: <a href='http://www.gnu.org/licenses/lgpl.html'>"
@@ -457,10 +456,7 @@ void MainWindow::onAbout()
             "<a href='https://github.com/shadowsocks/shadowsocks-qt5'>"
             "GitHub</a></p>")
             .arg(QStringLiteral(APP_VERSION))
-            .arg(QSS::Common::version().data())
-            .arg(Botan::version_major())
-            .arg(Botan::version_minor())
-            .arg(Botan::version_patch());
+            .arg(QSS::Common::version().data());
     QMessageBox::about(this, tr("About"), text);
 }
 
@@ -558,31 +554,28 @@ bool MainWindow::isInstanceRunning() const
 
 void MainWindow::initSingleInstance()
 {
-    instanceRunning = false;
-
-    QString username = qgetenv("USER");
-    if (username.isEmpty()) {
-        username = qgetenv("USERNAME");
-    }
-
-    QString serverName = QCoreApplication::applicationName() + "_" + username;
+    const QString serverName = QCoreApplication::applicationName();
     QLocalSocket socket;
     socket.connectToServer(serverName);
     if (socket.waitForConnected(500)) {
         instanceRunning = true;
         if (configHelper->isOnlyOneInstance()) {
-            qWarning() << "A instance from the same user is already running";
+            qWarning() << "An instance of ss-qt5 is already running";
         }
-        socket.write(serverName.toUtf8());
+        QByteArray username = qgetenv("USER");
+        if (username.isEmpty()) {
+            username = qgetenv("USERNAME");
+        }
+        socket.write(username);
         socket.waitForBytesWritten();
         return;
     }
 
-    /* Cann't connect to server, indicating it's the first instance of the user */
+    /* Can't connect to server, indicating it's the first instance of the user */
     instanceServer = new QLocalServer(this);
-    instanceServer->setSocketOptions(QLocalServer::UserAccessOption);
+    instanceServer->setSocketOptions(QLocalServer::WorldAccessOption);
     connect(instanceServer, &QLocalServer::newConnection,
-            this,&MainWindow::onSingleInstanceConnect);
+            this, &MainWindow::onSingleInstanceConnect);
     if (instanceServer->listen(serverName)) {
         /* Remove server in case of crashes */
         if (instanceServer->serverError() == QAbstractSocket::AddressInUseError &&
@@ -601,16 +594,18 @@ void MainWindow::onSingleInstanceConnect()
     }
 
     if (socket->waitForReadyRead(1000)) {
-        QString username = qgetenv("USER");
+        QByteArray username = qgetenv("USER");
         if (username.isEmpty()) {
             username = qgetenv("USERNAME");
         }
 
-        QByteArray byteArray = socket->readAll();
-        QString magic(byteArray);
-        if (magic == QCoreApplication::applicationName() + "_" + username) {
+        QByteArray recvUsername = socket->readAll();
+        if (recvUsername == username) {
+            // Only show the window if it's the same user
             show();
+        } else {
+            qWarning("Another user is trying to run another instance of ss-qt5");
         }
     }
-    delete socket;
+    socket->deleteLater();
 }
